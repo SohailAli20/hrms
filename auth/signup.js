@@ -7,6 +7,7 @@ const {
 	CognitoIdentityProviderClient,
 	AdminCreateUserCommand,
 	AdminAddUserToGroupCommand,
+	AdminDeleteUserCommand
 } = require("@aws-sdk/client-cognito-identity-provider");
 
 exports.handler = async (event, context, callback) => {
@@ -36,19 +37,6 @@ exports.handler = async (event, context, callback) => {
 		region: "us-east-1",
 	});
 	try {
-		const checkUserQuery = `SELECT id FROM employee WHERE work_email = $1`;
-		const checkUserResult = await client.query(checkUserQuery, [req.email]);
-		if (checkUserResult.rows.length > 0) {
-			return {
-				statusCode: 400,
-				headers: {
-					"Access-Control-Allow-Origin": "*",
-				},
-				body: JSON.stringify({
-					error: "User already exists",
-				}),
-			};
-		}
 		const org_id = uuid();
 		const user_id = uuid();
 		const input = {
@@ -70,6 +58,7 @@ exports.handler = async (event, context, callback) => {
 		const createUserResponse = await cognitoClient.send(
 			new AdminCreateUserCommand(input)
 		);
+		if(createUserResponse && createUserResponse.User && createUserResponse.User.Username){
 		const addUserToGroupParams = {
 			GroupName: "Admin",
 			Username : req.email,
@@ -78,10 +67,14 @@ exports.handler = async (event, context, callback) => {
 		const addUserToGroupResponse = await cognitoClient.send(
 			new AdminAddUserToGroupCommand(addUserToGroupParams)
 		);
-		if(!createUserResponse.requestId){
-		await client.query(`INSERT INTO organisation(id) VALUES ($1)`,[org_id]);
-		await client.query(`INSERT INTO employee (id , work_email, invitation_status,org_id,email_verified) VALUES ($1,$2, 'SENT',$3,'NO')`, [user_id,req.email,org_id]);
 		}
+		if(createUserResponse && createUserResponse.User && createUserResponse.User.Username){
+		await client.query("BEGIN");
+		const res1 = await client.query(`INSERT INTO organisation(id) VALUES ($1)`,[org_id]);
+		const res2 = await client.query(`INSERT INTO employee (id , work_email, invitation_status,org_id,email_verified) VALUES ($1,$2, 'SENT',$3,'NO')`, [user_id,req.email,org_id]);
+		await client.query("COMMIT");
+		}
+		
 		return {
 			statusCode: 200,
 			headers: {
@@ -90,6 +83,12 @@ exports.handler = async (event, context, callback) => {
 			body: JSON.stringify({message:"Successfully Signed-up"})
 		};
 	} catch (error) {
+		await client.query("ROLLBACK");
+		const params = {
+			UserPoolId: process.env.COGNITO_POOL_ID,
+			Username: req.email, 
+		};
+	   const deleteUserResponse = await cognitoClient.send(new AdminDeleteUserCommand(params));
 		return {
 			statusCode: 500,
 			headers: {
